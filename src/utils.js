@@ -56,7 +56,7 @@ function redactPatient(item, index) {
 }
 
 function parseArgs(argv) {
-  const booleanFlags = new Set(['confirm', 'help']);
+  const booleanFlags = new Set(['confirm', 'help', 'show-phi']);
   const out = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];

@@ -30,7 +30,7 @@ function int(value, fallback = 0) {
 }
 
 function makeConfig(envPath = path.resolve(process.cwd(), '.env'), extraEnv = process.env) {
-  const env = { ...extraEnv, ...loadEnvFile(envPath) };
+  const env = { ...loadEnvFile(envPath), ...extraEnv };
   const cwd = process.cwd();
   const stateDir = path.resolve(cwd, env.STATE_DIR || './state');
   return {
@@ -46,7 +46,6 @@ function makeConfig(envPath = path.resolve(process.cwd(), '.env'), extraEnv = pr
     actionRequiredNotifyEmpty: bool(env.ACTION_REQUIRED_NOTIFY_EMPTY, false),
     actionRequiredRedactPatients: bool(env.ACTION_REQUIRED_REDACT_PATIENTS, false),
     actionRequiredCron: env.ACTION_REQUIRED_CRON || '*/30 * * * *',
-    aaDefaultDryRun: bool(env.AA_DEFAULT_DRY_RUN, true),
   };
 }
 

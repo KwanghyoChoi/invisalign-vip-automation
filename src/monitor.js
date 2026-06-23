@@ -122,6 +122,13 @@ function parseClassicRows(rows) {
     for (const idx of [indexes.order, indexes.memo, indexes.clinical]) {
       if (typeof idx === 'number' && idx >= 0 && row[idx]) parts.push(normalizeSpaces(row[idx]));
     }
+    if (!parts.length) {
+      for (const cell of row) {
+        const txt = normalizeSpaces(cell);
+        if (!txt || txt === name || /^#\d+$/.test(txt) || /^(환자|치료|임상 상태|메모|주문 상태|사무소)$/.test(txt)) continue;
+        parts.push(txt);
+      }
+    }
     items.push({ name, id: idMatch[1], status: parts.filter(Boolean).join(' / ') });
   }
   return items;

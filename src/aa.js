@@ -6,7 +6,7 @@ function escapeRegExp(s) {
 }
 
 async function collectCandidateSummaries(page, options) {
-  return page.evaluate(({ search, targetName, packageText }) => {
+  const candidates = await page.evaluate(({ search, targetName, packageText }) => {
     const nameCompact = (targetName || search || '').replace(/\s+/g, '');
     const packageLower = (packageText || '').toLowerCase();
     const roots = [document, ...Array.from(document.querySelectorAll('*')).filter(e => e.shadowRoot).map(e => e.shadowRoot)];
@@ -29,12 +29,13 @@ async function collectCandidateSummaries(page, options) {
       if (ap !== bp) return ap - bp;
       return a.area - b.area;
     });
-    return out.slice(0, 8);
+    return out;
   }, options);
+  return normalizeCandidateList(candidates).slice(0, 8);
 }
 
-async function clickTreatmentMatch(page, options) {
-  const box = await page.evaluate(({ search, targetName, packageText }) => {
+async function collectTreatmentClickCandidates(page, options) {
+  return page.evaluate(({ search, targetName, packageText }) => {
     const nameCompact = (targetName || search || '').replace(/\s+/g, '');
     const packageLower = (packageText || '').toLowerCase();
     const roots = [document, ...Array.from(document.querySelectorAll('*')).filter(e => e.shadowRoot).map(e => e.shadowRoot)];
@@ -58,15 +59,118 @@ async function clickTreatmentMatch(page, options) {
       if (ap !== bp) return ap - bp;
       return a.area - b.area;
     });
-    return { count: candidates.length, hit: candidates[0] || null, previews: candidates.slice(0, 5).map(c => c.text) };
-  }, options).catch(() => ({ count: 0, hit: null, previews: [] }));
+    return candidates;
+  }, options).catch(() => []);
+}
 
-  if (!box.hit) return box;
-  await page.mouse.click(box.hit.x + Math.min(box.hit.w * 0.55, 520), box.hit.y + Math.min(box.hit.h / 2, 35));
-  return box;
+function normalizeCandidateList(candidates) {
+  const cardCandidates = candidates.filter(candidate => candidate.testid === 'Card-patient');
+  const scoped = cardCandidates.length ? cardCandidates : candidates;
+  const unique = [];
+  const seen = new Set();
+  for (const candidate of scoped) {
+    const key = normalizeSpaces(candidate.text || '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(candidate);
+  }
+  return unique;
+}
+
+function assertSingleCandidate(candidates) {
+  const unique = normalizeCandidateList(candidates);
+  if (!unique.length) throw new Error('Patient/treatment row click target not found. Use --name and/or --package to disambiguate.');
+  if (unique.length > 1) throw new Error(`Multiple matching patient/treatment candidates (${unique.length}). Refine --name and/or --package before using --confirm.`);
+  return unique[0];
+}
+
+async function clickTreatmentCandidate(page, candidate) {
+  await page.mouse.click(candidate.x + Math.min(candidate.w * 0.55, 520), candidate.y + Math.min(candidate.h / 2, 35));
+}
+
+function extractAlignerLastValues(formText) {
+  const lines = normalizeSpaces(formText).split(/\n+/).map(line => line.trim()).filter(Boolean);
+  const range = /\(\s*1\s*[-–~]\s*(\d{1,3})\s*\)/;
+  const upper = lines.find(line => /상악|upper|maxillary/i.test(line) && range.test(line));
+  const lower = lines.find(line => /하악|lower|mandibular/i.test(line) && range.test(line));
+  if (upper && lower) return [upper.match(range)[1], lower.match(range)[1]];
+  const nums = [...normalizeSpaces(formText).matchAll(/\(\s*1\s*[-–~]\s*(\d{1,3})\s*\)/g)].map(m => m[1]);
+  if (nums.length >= 2) return nums.slice(0, 2);
+  if (nums.length === 1) return [nums[0], nums[0]];
+  return [];
+}
+
+function isAaFormCreated(url) {
+  return /[?&]formId=\d+(?:&|$)/.test(url) && /[?&]formType=(?:A|ADDITIONAL_ALIGNERS[^&]*)(?:&|$)/.test(url);
+}
+
+function formatCandidatePreview(text, index, showPhi = false) {
+  return showPhi ? text : `candidate-${index + 1}`;
+}
+
+function resolveStartDryRun(options) {
+  return options.dryRun !== false;
+}
+
+function selectAlignerInputIndexes(descriptors) {
+  const usable = descriptors.filter(input => {
+    if (!input.visible) return false;
+    if (/hidden|radio|checkbox|search|password/i.test(input.type || '')) return false;
+    const text = `${input.label || ''} ${input.nearbyText || ''}`;
+    const hasUpper = /상악|upper|maxillary/i.test(text);
+    const hasLower = /하악|lower|mandibular/i.test(text);
+    const isArchAligner = (hasUpper !== hasLower) && /얼라이너|aligner/i.test(text);
+    if (!isArchAligner && /검색|search|username|password|제출\s*사유|reason/i.test(text)) return false;
+    return /얼라이너|aligner/i.test(text);
+  });
+  const upper = usable.find(input => {
+    const text = `${input.label || ''} ${input.nearbyText || ''}`;
+    return /상악|upper|maxillary/i.test(text) && !/하악|lower|mandibular/i.test(text);
+  });
+  const lower = usable.find(input => {
+    const text = `${input.label || ''} ${input.nearbyText || ''}`;
+    return /하악|lower|mandibular/i.test(text) && !/상악|upper|maxillary/i.test(text);
+  });
+  if (upper && lower) return [upper.index, lower.index];
+  return usable.slice(0, 2).map(input => input.index);
+}
+
+async function collectInputDescriptors(page) {
+  const inputs = page.locator('input');
+  const count = await inputs.count().catch(() => 0);
+  const descriptors = [];
+  for (let i = 0; i < count; i += 1) {
+    const el = inputs.nth(i);
+    const visible = await el.isVisible().catch(() => false);
+    const type = (await el.getAttribute('type').catch(() => '')) || '';
+    const attrs = `${await el.getAttribute('placeholder').catch(() => '') || ''} ${await el.getAttribute('aria-label').catch(() => '') || ''} ${await el.getAttribute('name').catch(() => '') || ''}`;
+    const nearbyText = await el.evaluate(node => {
+      const parts = [];
+      let current = node;
+      for (let depth = 0; current && depth < 4; depth += 1) {
+        const text = (current.innerText || current.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text) parts.push(text);
+        current = current.parentElement;
+      }
+      return parts.join(' ');
+    }).catch(() => '');
+    descriptors.push({ index: i, type, label: attrs, nearbyText, visible });
+  }
+  return descriptors;
+}
+
+async function fillAlignerInputs(page, value) {
+  const values = Array.isArray(value) ? value : [value, value];
+  const indexes = selectAlignerInputIndexes(await collectInputDescriptors(page));
+  const inputs = page.locator('input');
+  for (let i = 0; i < indexes.length && i < 2; i += 1) {
+    await inputs.nth(indexes[i]).fill(values[Math.min(i, values.length - 1)]);
+  }
+  return Math.min(indexes.length, 2);
 }
 
 async function fillFirstTwoTextInputs(page, value) {
+  const values = Array.isArray(value) ? value : [value, value];
   let filled = 0;
   const inputs = page.locator('input');
   const count = await inputs.count().catch(() => 0);
@@ -77,7 +181,7 @@ async function fillFirstTwoTextInputs(page, value) {
     if (/hidden|radio|checkbox|search|password/i.test(type)) continue;
     const label = `${await el.getAttribute('placeholder').catch(() => '') || ''} ${await el.getAttribute('aria-label').catch(() => '') || ''} ${await el.getAttribute('name').catch(() => '') || ''}`;
     if (/검색|search|username|password/i.test(label)) continue;
-    await el.fill(value);
+    await el.fill(values[Math.min(filled, values.length - 1)]);
     filled += 1;
     if (filled >= 2) return filled;
   }
@@ -85,8 +189,8 @@ async function fillFirstTwoTextInputs(page, value) {
 }
 
 async function startAdditionalAligners(config, options) {
-  if (!options.search) throw new Error('Missing --search. Example: --search "지우" --name "김 지우" --package "Phase 2"');
-  const dryRun = options.dryRun ?? config.aaDefaultDryRun;
+  if (!options.search) throw new Error('Missing --search. Example: --search "<given-name>" --name "<full-name>" --package "Phase 2"');
+  const dryRun = resolveStartDryRun(options);
   const browser = await launchBrowser(config);
   const page = await browser.newPage({ viewport: { width: 1600, height: 1200 }, locale: 'ko-KR' });
   try {
@@ -109,8 +213,9 @@ async function startAdditionalAligners(config, options) {
       return { dryRun: true, candidateCount: candidates.length, candidates: candidates.map(c => c.text) };
     }
 
-    const clickResult = await clickTreatmentMatch(page, { search: options.search, targetName: options.name || '', packageText: options.package || '' });
-    if (!clickResult.hit) throw new Error('Patient/treatment row click target not found. Use --name and/or --package to disambiguate.');
+    const clickCandidates = await collectTreatmentClickCandidates(page, { search: options.search, targetName: options.name || '', packageText: options.package || '' });
+    const clickTarget = assertSingleCandidate(clickCandidates);
+    await clickTreatmentCandidate(page, clickTarget);
     await page.waitForTimeout(8000);
 
     if (!(await clickExactTextByMouse(page, '추가 교정장치(Additional Aligners)'))) {
@@ -119,11 +224,10 @@ async function startAdditionalAligners(config, options) {
     await page.waitForTimeout(8000);
 
     const formText = normalizeSpaces((await page.locator('body').innerText().catch(() => '')) + '\n' + (await shadowText(page)));
-    const nums = [...formText.matchAll(/\(\s*1\s*[-–~]\s*(\d{1,3})\s*\)/g)].map(m => m[1]);
-    const last = nums[0];
-    if (!last) throw new Error('Aligner range not found');
+    const alignerLastValues = extractAlignerLastValues(formText);
+    if (alignerLastValues.length < 2) throw new Error('Aligner range not found');
 
-    const filled = await fillFirstTwoTextInputs(page, last);
+    const filled = await fillAlignerInputs(page, alignerLastValues);
     if (filled < 2) throw new Error(`Expected two aligner inputs; filled ${filled}`);
 
     if (!(await clickExactTextByMouse(page, '다음'))) {
@@ -133,12 +237,26 @@ async function startAdditionalAligners(config, options) {
     }
     await page.waitForTimeout(8000);
     const url = page.url();
-    const formCreated = /formId=\d+/.test(url) && /formType=/.test(url);
+    const formCreated = isAaFormCreated(url);
     if (!formCreated) throw new Error('First Next clicked but form creation was not verified');
-    return { dryRun: false, alignerLast: last, formCreated: true };
+    return { dryRun: false, alignerLast: alignerLastValues.join('/'), formCreated: true };
   } finally {
     await browser.close().catch(() => {});
   }
 }
 
-module.exports = { startAdditionalAligners, collectCandidateSummaries, fillFirstTwoTextInputs, escapeRegExp };
+module.exports = {
+  startAdditionalAligners,
+  collectCandidateSummaries,
+  collectTreatmentClickCandidates,
+  assertSingleCandidate,
+  extractAlignerLastValues,
+  fillAlignerInputs,
+  fillFirstTwoTextInputs,
+  formatCandidatePreview,
+  isAaFormCreated,
+  normalizeCandidateList,
+  resolveStartDryRun,
+  selectAlignerInputIndexes,
+  escapeRegExp,
+};

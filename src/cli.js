@@ -2,17 +2,21 @@
 const { makeConfig, requireCredentials } = require('./config');
 const { parseArgs } = require('./utils');
 const { monitorActionRequired } = require('./monitor');
-const { startAdditionalAligners } = require('./aa');
+const { formatCandidatePreview, startAdditionalAligners } = require('./aa');
 
 function usage() {
   return `Usage:
   vip-automation monitor [--env .env]
-  vip-automation aa:start --search <term> [--name <full name>] [--package <text>] [--confirm] [--env .env]
+  vip-automation aa:start --search <term> [--name <full name>] [--package <text>] [--confirm] [--show-phi] [--env .env]
   vip-automation help
 
 Safety:
-  aa:start is dry-run unless --confirm is supplied or AA_DEFAULT_DRY_RUN=false.
+  aa:start is dry-run unless --confirm is supplied.
 `;
+}
+
+function resolveAaDryRun(args) {
+  return args.confirm ? false : true;
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -32,16 +36,17 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   if (command === 'aa:start') {
-    const dryRun = args.confirm ? false : undefined;
     const result = await startAdditionalAligners(config, {
       search: args.search,
       name: args.name,
       package: args.package,
-      dryRun,
+      dryRun: resolveAaDryRun(args, config),
     });
     if (result.dryRun) {
       console.log(`dry_run=true candidate_count=${result.candidateCount}`);
-      for (const candidate of result.candidates) console.log(`- ${candidate}`);
+      for (let i = 0; i < result.candidates.length; i += 1) {
+        console.log(`- ${formatCandidatePreview(result.candidates[i], i, Boolean(args['show-phi']))}`);
+      }
     } else {
       console.log(`aa_started=true aligner_last=${result.alignerLast} form_created=${result.formCreated}`);
     }
@@ -60,4 +65,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main };
+module.exports = { main, resolveAaDryRun };

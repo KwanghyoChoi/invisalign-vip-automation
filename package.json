@@ -1,0 +1,22 @@
+{
+  "name": "invisalign-vip-automation",
+  "version": "0.1.0",
+  "description": "Playwright automation helpers for Invisalign VIP action-required monitoring and Additional Aligners start workflow.",
+  "type": "commonjs",
+  "bin": {
+    "vip-automation": "src/cli.js"
+  },
+  "scripts": {
+    "monitor": "node src/cli.js monitor",
+    "aa:start": "node src/cli.js aa:start",
+    "cron:print": "node scripts/print-cron.js",
+    "test": "node --test",
+    "lint": "node --check src/*.js scripts/*.js test/*.js"
+  },
+  "keywords": ["invisalign", "vip", "playwright", "orthodontics", "automation"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.60.0"
+  }
+}
